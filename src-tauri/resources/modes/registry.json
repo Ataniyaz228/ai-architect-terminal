@@ -1,0 +1,32 @@
+[
+    {
+        "id": "architecture",
+        "label": "Architecture",
+        "icon": "layers",
+        "description": "System architecture, component design, infrastructure decisions",
+        "prompt_file": "architecture.md",
+        "default_model": "gemini-3-flash",
+        "temperature": 0.3,
+        "max_tokens": 4096
+    },
+    {
+        "id": "design_review",
+        "label": "Design Review",
+        "icon": "search",
+        "description": "Critical analysis of existing architecture and design decisions",
+        "prompt_file": "design_review.md",
+        "default_model": "gemini-3-flash",
+        "temperature": 0.4,
+        "max_tokens": 4096
+    },
+    {
+        "id": "ideation",
+        "label": "Ideation",
+        "icon": "lightbulb",
+        "description": "Brainstorming, exploring design spaces, generating creative solutions",
+        "prompt_file": "ideation.md",
+        "default_model": "gemini-3-flash",
+        "temperature": 0.7,
+        "max_tokens": 4096
+    }
+]

@@ -1,0 +1,2 @@
+﻿    Checking ai-architect-terminal v0.1.0 (C:\Users\Ataniyaz\projects for portfolio\ai-architect-terminal\src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.54s
