@@ -7,6 +7,42 @@ import { useSessionStore } from '@/stores';
 import { CopyIcon, DownloadIcon, PinIcon, CheckIcon } from './Icons';
 import FloatingCommandBar from './FloatingCommandBar';
 
+// Fix #8: extracted shared button style to avoid ~60 lines of duplication
+interface ActionButtonProps {
+    onClick: () => void;
+    title: string;
+    active?: boolean;
+    children: React.ReactNode;
+}
+
+function ActionButton({ onClick, title, active, children }: ActionButtonProps) {
+    const [hovered, setHovered] = useState(false);
+    return (
+        <button
+            onClick={onClick}
+            title={title}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '4px 8px',
+                background: 'transparent',
+                border: `1px solid ${hovered ? 'var(--text-muted)' : 'var(--border-primary)'}`,
+                borderRadius: '4px',
+                color: active ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '10px',
+                cursor: 'pointer',
+                transition: 'all 0.15s',
+            }}
+        >
+            {children}
+        </button>
+    );
+}
+
 export default function OutputZone() {
     const {
         output,
@@ -14,6 +50,7 @@ export default function OutputZone() {
         errorMessage,
         versions,
         currentVersionIndex,
+        currentEntryId, // Fix #9: moved here instead of calling getState() inside callback
         goToVersion,
         inlineEditLoading,
     } = useSessionStore();
@@ -46,8 +83,8 @@ export default function OutputZone() {
         URL.revokeObjectURL(url);
     }, [output]);
 
+    // Fix #9: use currentEntryId from hook destructure, not getState() inside callback
     const handlePin = useCallback(async () => {
-        const { currentEntryId } = useSessionStore.getState();
         if (!currentEntryId) return;
         try {
             const { invoke } = await import('@tauri-apps/api/core');
@@ -55,9 +92,10 @@ export default function OutputZone() {
         } catch (err) {
             console.error('Pin failed:', err);
         }
-    }, []);
+    }, [currentEntryId]);
 
     const isGenerating = streamingStatus === 'generating';
+    const isAborted = streamingStatus === 'aborted';
     const isEmpty = !output && streamingStatus === 'idle';
     const hasVersions = versions.length > 1;
 
@@ -180,90 +218,21 @@ export default function OutputZone() {
                         </div>
                     )}
 
-                    {/* Action buttons */}
+                    {/* Fix #8: use ActionButton instead of duplicated inline styles */}
                     {output && (
                         <div style={{ display: 'flex', gap: '4px' }}>
-                            <button
-                                onClick={handleCopy}
-                                title="Copy to clipboard"
-                                style={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '4px',
-                                    padding: '4px 8px',
-                                    background: 'transparent',
-                                    border: '1px solid var(--border-primary)',
-                                    borderRadius: '4px',
-                                    color: copied ? 'var(--accent-primary)' : 'var(--text-secondary)',
-                                    fontFamily: 'var(--font-mono)',
-                                    fontSize: '10px',
-                                    cursor: 'pointer',
-                                    transition: 'all 0.15s',
-                                }}
-                                onMouseEnter={(e) => {
-                                    e.currentTarget.style.borderColor = 'var(--text-muted)';
-                                }}
-                                onMouseLeave={(e) => {
-                                    e.currentTarget.style.borderColor = 'var(--border-primary)';
-                                }}
-                            >
+                            <ActionButton onClick={handleCopy} title="Copy to clipboard" active={copied}>
                                 {copied ? <CheckIcon size={11} /> : <CopyIcon size={11} />}
                                 {copied ? 'COPIED' : 'COPY'}
-                            </button>
-                            <button
-                                onClick={handleExport}
-                                title="Export as .md"
-                                style={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '4px',
-                                    padding: '4px 8px',
-                                    background: 'transparent',
-                                    border: '1px solid var(--border-primary)',
-                                    borderRadius: '4px',
-                                    color: 'var(--text-secondary)',
-                                    fontFamily: 'var(--font-mono)',
-                                    fontSize: '10px',
-                                    cursor: 'pointer',
-                                    transition: 'all 0.15s',
-                                }}
-                                onMouseEnter={(e) => {
-                                    e.currentTarget.style.borderColor = 'var(--text-muted)';
-                                }}
-                                onMouseLeave={(e) => {
-                                    e.currentTarget.style.borderColor = 'var(--border-primary)';
-                                }}
-                            >
+                            </ActionButton>
+                            <ActionButton onClick={handleExport} title="Export as .md">
                                 <DownloadIcon size={11} />
                                 .MD
-                            </button>
-                            <button
-                                onClick={handlePin}
-                                title="Pin entry"
-                                style={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '4px',
-                                    padding: '4px 8px',
-                                    background: 'transparent',
-                                    border: '1px solid var(--border-primary)',
-                                    borderRadius: '4px',
-                                    color: 'var(--text-secondary)',
-                                    fontFamily: 'var(--font-mono)',
-                                    fontSize: '10px',
-                                    cursor: 'pointer',
-                                    transition: 'all 0.15s',
-                                }}
-                                onMouseEnter={(e) => {
-                                    e.currentTarget.style.borderColor = 'var(--text-muted)';
-                                }}
-                                onMouseLeave={(e) => {
-                                    e.currentTarget.style.borderColor = 'var(--border-primary)';
-                                }}
-                            >
+                            </ActionButton>
+                            <ActionButton onClick={handlePin} title="Pin entry">
                                 <PinIcon size={11} />
                                 PIN
-                            </button>
+                            </ActionButton>
                         </div>
                     )}
                 </div>
@@ -334,6 +303,30 @@ export default function OutputZone() {
                             }}
                         >
                             ERROR: {errorMessage}
+                        </span>
+                    </div>
+                )}
+
+                {/* Fix #10: show aborted banner so user knows generation was stopped */}
+                {isAborted && (
+                    <div
+                        className="animate-fade-in"
+                        style={{
+                            padding: '8px 16px',
+                            background: 'rgba(210, 153, 34, 0.1)',
+                            border: '1px solid var(--status-warning)',
+                            borderRadius: '4px',
+                            marginBottom: '12px',
+                        }}
+                    >
+                        <span
+                            style={{
+                                fontFamily: 'var(--font-mono)',
+                                fontSize: '11px',
+                                color: 'var(--status-warning)',
+                            }}
+                        >
+                            ■ GENERATION STOPPED — partial result shown below
                         </span>
                     </div>
                 )}

@@ -111,26 +111,20 @@ pub async fn llm_request(
     state: State<'_, AppState>,
     payload: LlmRequestPayload,
 ) -> Result<String, String> {
-    // Reset abort flag
     state.abort_flag.store(false, Ordering::Relaxed);
 
-    // Resolve mode
     let mode_config = state.mode_resolver.get_mode_config(&payload.mode_id)?;
     let system_prompt = state.mode_resolver.resolve_prompt(&payload.mode_id)?;
     let model = payload.model.unwrap_or(mode_config.default_model.clone());
 
-    // Get API key and base URL
     let api_key = get_api_key()?;
     let base_url = get_stored_base_url();
 
-    // Build messages array
     let messages: Vec<serde_json::Value> = if let Some(msgs) = payload.messages {
-        // Use pre-built conversation history from frontend (for Refine)
         msgs.iter().map(|m| {
             serde_json::json!({ "role": m.role, "content": m.content })
         }).collect()
     } else {
-        // Default: system prompt + user input
         vec![
             serde_json::json!({ "role": "system", "content": system_prompt }),
             serde_json::json!({ "role": "user", "content": payload.raw_input }),
@@ -139,7 +133,6 @@ pub async fn llm_request(
 
     let should_skip = payload.skip_entry.unwrap_or(false);
 
-    // Create or use session (skip for refine)
     let session_id = match payload.session_id {
         Some(sid) => sid,
         None => {
@@ -159,7 +152,6 @@ pub async fn llm_request(
         }
     };
 
-    // Create entry (skip for refine — it's a version update, not a new entry)
     let entry_id = if should_skip {
         "refine".to_string()
     } else {
@@ -175,12 +167,14 @@ pub async fn llm_request(
             status: "generating".to_string(),
             created_at: Utc::now().to_rfc3339(),
         };
+        // Fix #3: DB write is short but we keep it synchronous here since it's just an INSERT.
+        // The blocking concern is primarily for search queries; short writes are fine on the
+        // tokio thread as long as they complete quickly.
         state.db.add_entry(&entry)
             .map_err(|e| format!("DB error: {}", e))?;
         eid
     };
 
-    // Start request in background
     let abort_flag = state.abort_flag.clone();
     let llm_client = LlmClient::new();
     let app = app_handle.clone();
@@ -220,21 +214,20 @@ pub struct InlineEditPayload {
 
 #[tauri::command]
 pub async fn inline_edit_request(
+    app_handle: AppHandle,
     payload: InlineEditPayload,
 ) -> Result<String, String> {
     let api_key = get_api_key()?;
     let base_url = get_stored_base_url();
 
-    let system_prompt = r#"Ты — хирург-редактор документов.
-
-ПРАВИЛА:
-1. Тебе дан ПОЛНЫЙ ДОКУМЕНТ в Markdown и ВЫДЕЛЕННЫЙ ФРАГМЕНТ, который пользователь хочет изменить.
-2. ВАЖНО: Выделенный фрагмент — это рендеренный текст (без Markdown-разметки). Найди соответствующее место в исходном Markdown.
-3. Примени изменение согласно инструкции пользователя.
-4. Верни в ответе ПОЛНЫЙ ОБНОВЛЁННЫЙ ДОКУМЕНТ целиком — весь Markdown с применённым изменением.
-5. НЕ добавляй вступлений, извинений, объяснений.
-6. НЕ оборачивай ответ в ```markdown``` блоки.
-7. Сохраняй ВСЮ остальную структуру, форматирование и содержание документа без изменений."#;
+    // Fix #6: load prompt from bundled resource file instead of hardcoding in Rust
+    let resource_dir = app_handle.path().resource_dir()
+        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
+    let prompt_path = resource_dir.join("resources").join("modes").join("inline_edit_prompt.md");
+    let system_prompt = std::fs::read_to_string(&prompt_path)
+        .unwrap_or_else(|_| {
+            "You are a document editor. Apply the user's instruction to the highlighted fragment and return the full updated document.".to_string()
+        });
 
     let user_message = format!(
         "ПОЛНЫЙ ДОКУМЕНТ (Markdown):\n---\n{}\n---\n\nВЫДЕЛЕННЫЙ ФРАГМЕНТ (рендеренный текст, может отличаться от Markdown):\n---\n{}\n---\n\nИНСТРУКЦИЯ: {}",

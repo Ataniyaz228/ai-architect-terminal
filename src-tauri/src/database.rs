@@ -36,6 +36,9 @@ impl Database {
         let db_path = app_data_dir.join("history.db");
         let conn = Connection::open(db_path)?;
 
+        // Fix #4: enable FK enforcement on this connection (not just at schema init)
+        conn.execute("PRAGMA foreign_keys = ON", [])?;
+
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
@@ -57,8 +60,7 @@ impl Database {
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
-            CREATE INDEX IF NOT EXISTS idx_entries_session ON entries(session_id);
-            PRAGMA foreign_keys = ON;"
+            CREATE INDEX IF NOT EXISTS idx_entries_session ON entries(session_id);"
         )?;
 
         Ok(Database {
@@ -103,7 +105,7 @@ impl Database {
 
     pub fn delete_session(&self, id: &str) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM entries WHERE session_id = ?1", params![id])?;
+        // Fix #4: ON DELETE CASCADE handles entries automatically; no manual delete needed
         conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
         Ok(())
     }

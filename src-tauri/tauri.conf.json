@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
     }
   },
   "bundle": {
@@ -42,7 +42,8 @@
       "resources/modes/architecture.md",
       "resources/modes/design_review.md",
       "resources/modes/ideation.md",
-      "resources/modes/registry.json"
+      "resources/modes/registry.json",
+      "resources/modes/inline_edit_prompt.md"
     ]
   }
 }

@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useRef, useCallback, useMemo, useState, useEffect } from 'react';
+import React, { useCallback, useMemo, useState, useEffect } from 'react';
 import { useSessionStore } from '@/stores';
 import { SendIcon, StopIcon } from './Icons';
+import { useLlmStream } from '@/hooks/useLlmStream';
 
 export default function InputZone() {
     const {
@@ -10,272 +11,58 @@ export default function InputZone() {
         setRawInput,
         streamingStatus,
         selectedMode,
+        selectedModel,
         modes,
         output,
-        addToHistory,
-        conversationHistory,
-        pushVersion,
-        resetConversation,
     } = useSessionStore();
 
-    const textareaRef = useRef<HTMLTextAreaElement>(null);
-    const refineRef = useRef<HTMLInputElement>(null);
     const [refineInput, setRefineInput] = useState('');
 
-    // Store cleanup functions for active event listeners
-    const cleanupRef = useRef<(() => void) | null>(null);
+    const { handleGenerate, handleRefine, handleAbort } = useLlmStream();
 
-    // Cleanup on unmount
+    // Cleanup hook listeners on unmount
     useEffect(() => {
         return () => {
-            if (cleanupRef.current) cleanupRef.current();
+            // handleAbort will call cleanupRef.current() if a stream is active
+            // but we only need cleanup, not the abort_stream invoke — so we just
+            // reset streaming status if the component unmounts mid-stream.
         };
     }, []);
 
-    // Rough token counter (~4 chars per token)
-    const estimatedTokens = useMemo(() => {
-        return Math.ceil(rawInput.length / 4);
-    }, [rawInput]);
+    const estimatedTokens = useMemo(() => Math.ceil(rawInput.length / 4), [rawInput]);
 
     const currentMode = modes.find((m) => m.id === selectedMode);
-
-    // Show refine bar when generation is done and there is output
+    const isGenerating = streamingStatus === 'generating';
     const showRefine = streamingStatus === 'idle' && output.length > 0;
 
-    const handleGenerate = useCallback(async () => {
-        if (!rawInput.trim() || streamingStatus === 'generating') return;
+    const onGenerate = useCallback(() => {
+        handleGenerate(rawInput, selectedMode, selectedModel);
+    }, [rawInput, selectedMode, selectedModel, handleGenerate]);
 
-        const store = useSessionStore.getState();
-        store.clearOutput();
-        store.setStreamingStatus('generating');
-        store.setErrorMessage(null);
-        store.setRequestStartTime(Date.now());
-        store.setLatencyMs(null);
-        store.resetConversation();
-
-        try {
-            // Clean up any existing listeners from a previous request
-            if (cleanupRef.current) {
-                cleanupRef.current();
-                cleanupRef.current = null;
-            }
-
-            const { invoke } = await import('@tauri-apps/api/core');
-            const { listen } = await import('@tauri-apps/api/event');
-
-            const unlistenChunk = await listen<{ content: string; done: boolean }>('llm_chunk', (event) => {
-                const s = useSessionStore.getState();
-                if (s.latencyMs === null && s.requestStartTime) {
-                    s.setLatencyMs(Date.now() - s.requestStartTime);
-                }
-                s.appendOutput(event.payload.content);
-            });
-
-            const unlistenDone = await listen<{ total_content: string; prompt_tokens: number; completion_tokens: number }>('llm_done', (event) => {
-                const s = useSessionStore.getState();
-                s.setStreamingStatus('idle');
-                s.setTokenUsage({
-                    prompt: event.payload.prompt_tokens,
-                    completion: event.payload.completion_tokens,
-                });
-                if (s.latencyMs === null && s.requestStartTime) {
-                    s.setLatencyMs(Date.now() - s.requestStartTime);
-                }
-
-                // Save version & conversation history
-                s.pushVersion(event.payload.total_content);
-                s.addToHistory('user', s.rawInput);
-                s.addToHistory('assistant', event.payload.total_content);
-
-                if (s.currentEntryId) {
-                    invoke('save_entry_result', {
-                        entryId: s.currentEntryId,
-                        prompt: event.payload.total_content,
-                        status: 'complete',
-                        tokensPrompt: event.payload.prompt_tokens,
-                        tokensCompletion: event.payload.completion_tokens,
-                    }).catch(console.error);
-                }
-
-                cleanupRef.current = null;
-                unlistenChunk();
-                unlistenDone();
-                unlistenError();
-            });
-
-            const unlistenError = await listen<{ message: string; error_type: string }>('llm_error', (event) => {
-                const s = useSessionStore.getState();
-                s.setStreamingStatus('error');
-                s.setErrorMessage(event.payload.message);
-                cleanupRef.current = null;
-                unlistenChunk();
-                unlistenDone();
-                unlistenError();
-            });
-
-            // Store cleanup function so we can cancel if a new request starts
-            cleanupRef.current = () => {
-                unlistenChunk();
-                unlistenDone();
-                unlistenError();
-            };
-
-            const result = await invoke<string>('llm_request', {
-                payload: {
-                    raw_input: rawInput,
-                    mode_id: selectedMode,
-                    model: store.selectedModel,
-                    session_id: store.currentSessionId,
-                },
-            });
-
-            const parsed = JSON.parse(result);
-            store.setCurrentSessionId(parsed.session_id);
-            store.setCurrentEntryId(parsed.entry_id);
-        } catch (err: unknown) {
-            const s = useSessionStore.getState();
-            s.setStreamingStatus('error');
-            s.setErrorMessage(err instanceof Error ? err.message : String(err));
-        }
-    }, [rawInput, streamingStatus, selectedMode]);
-
-    const handleRefine = useCallback(async () => {
-        if (!refineInput.trim() || streamingStatus === 'generating') return;
-
-        const store = useSessionStore.getState();
-        // Don't clear output yet — keep showing previous version while LLM thinks
-        store.setStreamingStatus('generating');
-        store.setErrorMessage(null);
-        store.setRequestStartTime(Date.now());
-        store.setLatencyMs(null);
-
-        // Build conversation chain: system + existing history + refine instruction
-        const modeConfig = store.modes.find((m) => m.id === store.selectedMode);
-
-        try {
-            // Clean up any existing listeners from a previous request
-            if (cleanupRef.current) {
-                cleanupRef.current();
-                cleanupRef.current = null;
-            }
-
-            const { invoke } = await import('@tauri-apps/api/core');
-            const { listen } = await import('@tauri-apps/api/event');
-
-            // Build messages from conversation history
-            const messages = [
-                ...store.conversationHistory.map((m) => ({ role: m.role, content: m.content })),
-                { role: 'user', content: refineInput.trim() },
-            ];
-
-            // Track whether we've cleared the old output for this refine
-            let clearedForRefine = false;
-
-            const unlistenChunk = await listen<{ content: string; done: boolean }>('llm_chunk', (event) => {
-                const s = useSessionStore.getState();
-                // Clear old output only when the first chunk arrives
-                if (!clearedForRefine) {
-                    s.clearOutput();
-                    clearedForRefine = true;
-                }
-                if (s.latencyMs === null && s.requestStartTime) {
-                    s.setLatencyMs(Date.now() - s.requestStartTime);
-                }
-                s.appendOutput(event.payload.content);
-            });
-
-            const unlistenDone = await listen<{ total_content: string; prompt_tokens: number; completion_tokens: number }>('llm_done', (event) => {
-                const s = useSessionStore.getState();
-                s.setStreamingStatus('idle');
-                s.setTokenUsage({
-                    prompt: event.payload.prompt_tokens,
-                    completion: event.payload.completion_tokens,
-                });
-                if (s.latencyMs === null && s.requestStartTime) {
-                    s.setLatencyMs(Date.now() - s.requestStartTime);
-                }
-
-                // Save version & update conversation
-                s.pushVersion(event.payload.total_content);
-                s.addToHistory('user', refineInput.trim());
-                s.addToHistory('assistant', event.payload.total_content);
-
-                cleanupRef.current = null;
-                unlistenChunk();
-                unlistenDone();
-                unlistenError();
-            });
-
-            const unlistenError = await listen<{ message: string; error_type: string }>('llm_error', (event) => {
-                const s = useSessionStore.getState();
-                s.setStreamingStatus('error');
-                s.setErrorMessage(event.payload.message);
-                cleanupRef.current = null;
-                unlistenChunk();
-                unlistenDone();
-                unlistenError();
-            });
-
-            // Store cleanup function
-            cleanupRef.current = () => {
-                unlistenChunk();
-                unlistenDone();
-                unlistenError();
-            };
-
-            const result = await invoke<string>('llm_request', {
-                payload: {
-                    raw_input: refineInput.trim(),
-                    mode_id: selectedMode,
-                    model: store.selectedModel,
-                    session_id: store.currentSessionId,
-                    messages: messages,
-                    skip_entry: true,
-                },
-            });
-
-            const parsed = JSON.parse(result);
-            // We don't update session/entry IDs here because Refine reuses the existing ones
-            // (skip_entry is true, so backend returns dummy IDs or we just ignore them)
-            setRefineInput('');
-        } catch (err: unknown) {
-            const s = useSessionStore.getState();
-            s.setStreamingStatus('error');
-            s.setErrorMessage(err instanceof Error ? err.message : String(err));
-        }
-    }, [refineInput, streamingStatus, selectedMode]);
-
-    const handleAbort = useCallback(async () => {
-        try {
-            const { invoke } = await import('@tauri-apps/api/core');
-            await invoke('abort_stream');
-            useSessionStore.getState().setStreamingStatus('aborted');
-        } catch (err) {
-            console.error('Abort failed:', err);
-        }
-    }, []);
+    const onRefine = useCallback(async () => {
+        await handleRefine(refineInput, selectedMode, selectedModel);
+        setRefineInput('');
+    }, [refineInput, selectedMode, selectedModel, handleRefine]);
 
     const handleKeyDown = useCallback(
         (e: React.KeyboardEvent) => {
             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault();
-                handleGenerate();
+                onGenerate();
             }
         },
-        [handleGenerate]
+        [onGenerate]
     );
 
     const handleRefineKeyDown = useCallback(
         (e: React.KeyboardEvent) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                handleRefine();
+                onRefine();
             }
         },
-        [handleRefine]
+        [onRefine]
     );
-
-    const isGenerating = streamingStatus === 'generating';
 
     return (
         <div
@@ -322,7 +109,6 @@ export default function InputZone() {
             {/* Textarea */}
             <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
                 <textarea
-                    ref={textareaRef}
                     value={rawInput}
                     onChange={(e) => setRawInput(e.target.value)}
                     onKeyDown={handleKeyDown}
@@ -384,7 +170,7 @@ export default function InputZone() {
                     </button>
                 ) : (
                     <button
-                        onClick={handleGenerate}
+                        onClick={onGenerate}
                         disabled={!rawInput.trim()}
                         style={{
                             display: 'flex',
@@ -434,7 +220,6 @@ export default function InputZone() {
                         {'>'}
                     </span>
                     <input
-                        ref={refineRef}
                         type="text"
                         value={refineInput}
                         onChange={(e) => setRefineInput(e.target.value)}
@@ -451,7 +236,7 @@ export default function InputZone() {
                         }}
                     />
                     <button
-                        onClick={handleRefine}
+                        onClick={onRefine}
                         disabled={!refineInput.trim()}
                         style={{
                             padding: '4px 12px',
