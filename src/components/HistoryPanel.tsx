@@ -2,7 +2,7 @@
 
 import React, { useEffect, useCallback } from 'react';
 import { useHistoryStore, useSessionStore } from '@/stores';
-import { XIcon, TrashIcon, ChevronRightIcon, PinIcon } from './Icons';
+import { XIcon, TrashIcon, PinIcon } from './Icons';
 
 export default function HistoryPanel() {
     const {
@@ -20,7 +20,16 @@ export default function HistoryPanel() {
         setSearchResults,
     } = useHistoryStore();
 
-    const { setRawInput, setOutput, setCurrentSessionId } = useSessionStore();
+    const {
+        setRawInput,
+        setOutput,
+        setCurrentSessionId,
+        setCurrentEntryId,
+        startNewSession,
+        pushVersion,
+        resetConversation,
+        setSelectedMode,
+    } = useSessionStore();
 
     // Load sessions on mount
     useEffect(() => {
@@ -80,12 +89,44 @@ export default function HistoryPanel() {
         }
     }, [setSearchQuery, setSearchResults]);
 
-    const handleLoadEntry = useCallback((entry: { raw_input: string; generated_prompt: string; session_id: string }) => {
-        setRawInput(entry.raw_input);
-        setOutput(entry.generated_prompt);
-        setCurrentSessionId(entry.session_id);
+    const handleLoadSession = useCallback(async (session: typeof sessions[0]) => {
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            // Load all entries for this session (versions)
+            const entries = await invoke<typeof sessionEntries>('get_session_entries', {
+                sessionId: session.id,
+            });
+
+            if (entries.length === 0) return;
+
+            // Get the latest entry
+            const latest = entries[entries.length - 1];
+
+            // Restore state
+            resetConversation();
+            setRawInput(latest.raw_input);
+            setOutput(latest.generated_prompt);
+            setCurrentSessionId(session.id);
+            setCurrentEntryId(latest.id);
+            setSelectedMode(session.mode);
+
+            // Populate versions from all entries
+            entries.forEach((entry: typeof latest) => {
+                if (entry.generated_prompt) {
+                    pushVersion(entry.generated_prompt);
+                }
+            });
+
+            setActivePanel('none');
+        } catch (err) {
+            console.error('Failed to load session:', err);
+        }
+    }, [setRawInput, setOutput, setCurrentSessionId, setCurrentEntryId, setActivePanel, resetConversation, pushVersion, setSelectedMode]);
+
+    const handleNewSession = useCallback(() => {
+        startNewSession();
         setActivePanel('none');
-    }, [setRawInput, setOutput, setCurrentSessionId, setActivePanel]);
+    }, [startNewSession, setActivePanel]);
 
     if (activePanel !== 'history') return null;
 
@@ -136,15 +177,15 @@ export default function HistoryPanel() {
                 </button>
             </div>
 
-            {/* Search */}
-            <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-secondary)' }}>
+            {/* Search + New Session */}
+            <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-secondary)', display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <input
                     type="text"
                     value={searchQuery}
                     onChange={(e) => handleSearch(e.target.value)}
                     placeholder="Search history..."
                     style={{
-                        width: '100%',
+                        flex: 1,
                         padding: '6px 10px',
                         background: 'var(--bg-tertiary)',
                         border: '1px solid var(--border-primary)',
@@ -155,11 +196,37 @@ export default function HistoryPanel() {
                         outline: 'none',
                     }}
                 />
+                <button
+                    onClick={handleNewSession}
+                    title="New Session"
+                    style={{
+                        background: 'transparent',
+                        border: '1px solid var(--border-primary)',
+                        borderRadius: '4px',
+                        color: 'var(--text-secondary)',
+                        cursor: 'pointer',
+                        padding: '5px 8px',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '14px',
+                        lineHeight: 1,
+                        transition: 'all 0.15s',
+                    }}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'var(--bg-hover)';
+                        e.currentTarget.style.color = 'var(--text-primary)';
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'transparent';
+                        e.currentTarget.style.color = 'var(--text-secondary)';
+                    }}
+                >
+                    +
+                </button>
             </div>
 
             {/* Content */}
             <div style={{ flex: 1, overflow: 'auto' }}>
-                {searchQuery && searchResults.length > 0 ? (
+                {searchResults.length > 0 ? (
                     // Search results
                     <div style={{ padding: '8px' }}>
                         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '9px', color: 'var(--text-muted)', padding: '0 4px' }}>
@@ -168,7 +235,11 @@ export default function HistoryPanel() {
                         {searchResults.map((entry) => (
                             <button
                                 key={entry.id}
-                                onClick={() => handleLoadEntry(entry)}
+                                onClick={() => {
+                                    // Find the session for this entry and load it
+                                    const session = sessions.find(s => s.id === entry.session_id);
+                                    if (session) handleLoadSession(session);
+                                }}
                                 style={{
                                     width: '100%',
                                     padding: '8px',
@@ -201,73 +272,6 @@ export default function HistoryPanel() {
                             </button>
                         ))}
                     </div>
-                ) : selectedSession ? (
-                    // Session entries
-                    <div style={{ padding: '8px' }}>
-                        <button
-                            onClick={() => { setSelectedSession(null); setSessionEntries([]); }}
-                            style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '4px',
-                                padding: '4px 8px',
-                                background: 'transparent',
-                                border: 'none',
-                                color: 'var(--accent-primary)',
-                                fontFamily: 'var(--font-mono)',
-                                fontSize: '10px',
-                                cursor: 'pointer',
-                                marginBottom: '8px',
-                            }}
-                        >
-                            ← Back
-                        </button>
-                        <div
-                            style={{
-                                fontFamily: 'var(--font-mono)',
-                                fontSize: '11px',
-                                color: 'var(--text-primary)',
-                                padding: '0 4px 8px',
-                                fontWeight: 600,
-                            }}
-                        >
-                            {selectedSession.title.slice(0, 50)}
-                        </div>
-                        {sessionEntries.map((entry) => (
-                            <button
-                                key={entry.id}
-                                onClick={() => handleLoadEntry(entry)}
-                                style={{
-                                    width: '100%',
-                                    padding: '8px',
-                                    margin: '4px 0',
-                                    background: 'var(--bg-tertiary)',
-                                    border: '1px solid var(--border-secondary)',
-                                    borderRadius: '4px',
-                                    color: 'var(--text-secondary)',
-                                    fontFamily: 'var(--font-mono)',
-                                    fontSize: '11px',
-                                    textAlign: 'left',
-                                    cursor: 'pointer',
-                                    transition: 'all 0.15s',
-                                }}
-                                onMouseEnter={(e) => {
-                                    e.currentTarget.style.borderColor = 'var(--border-primary)';
-                                }}
-                                onMouseLeave={(e) => {
-                                    e.currentTarget.style.borderColor = 'var(--border-secondary)';
-                                }}
-                            >
-                                <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {entry.raw_input.slice(0, 80)}
-                                </div>
-                                <div style={{ fontSize: '9px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                                    {new Date(entry.created_at).toLocaleString()}
-                                    {entry.pinned && ' · 📌'}
-                                </div>
-                            </button>
-                        ))}
-                    </div>
                 ) : (
                     // Sessions list
                     <div style={{ padding: '8px' }}>
@@ -289,10 +293,7 @@ export default function HistoryPanel() {
                             sessions.map((session) => (
                                 <button
                                     key={session.id}
-                                    onClick={() => {
-                                        setSelectedSession(session);
-                                        loadEntries(session.id);
-                                    }}
+                                    onClick={() => handleLoadSession(session)}
                                     style={{
                                         width: '100%',
                                         padding: '8px 10px',
@@ -350,7 +351,6 @@ export default function HistoryPanel() {
                                         >
                                             <TrashIcon size={12} />
                                         </button>
-                                        <ChevronRightIcon size={12} />
                                     </div>
                                 </button>
                             ))

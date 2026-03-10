@@ -17,6 +17,7 @@ pub struct Session {
 pub struct Entry {
     pub id: String,
     pub session_id: String,
+    pub version_number: i64,
     pub raw_input: String,
     pub generated_prompt: String,
     pub token_usage_prompt: i64,
@@ -51,6 +52,7 @@ impl Database {
             CREATE TABLE IF NOT EXISTS entries (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
+                version_number INTEGER NOT NULL DEFAULT 1,
                 raw_input TEXT NOT NULL,
                 generated_prompt TEXT NOT NULL DEFAULT '',
                 token_usage_prompt INTEGER NOT NULL DEFAULT 0,
@@ -103,6 +105,15 @@ impl Database {
         Ok(sessions)
     }
 
+    pub fn update_session_title(&self, id: &str, title: &str) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
+            params![title, &Utc::now().to_rfc3339(), id],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_session(&self, id: &str) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
         // Fix #4: ON DELETE CASCADE handles entries automatically; no manual delete needed
@@ -110,14 +121,48 @@ impl Database {
         Ok(())
     }
 
+    pub fn next_version_number(&self, session_id: &str) -> SqliteResult<i64> {
+        let conn = self.conn.lock().unwrap();
+        let max: Option<i64> = conn.query_row(
+            "SELECT MAX(version_number) FROM entries WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        Ok(max.unwrap_or(0) + 1)
+    }
+
+    pub fn get_latest_entry(&self, session_id: &str) -> SqliteResult<Option<Entry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, version_number, raw_input, generated_prompt, token_usage_prompt, token_usage_completion, pinned, status, created_at
+             FROM entries WHERE session_id = ?1 ORDER BY version_number DESC LIMIT 1"
+        )?;
+        let mut entries = stmt.query_map(params![session_id], |row| {
+            Ok(Entry {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                version_number: row.get(2)?,
+                raw_input: row.get(3)?,
+                generated_prompt: row.get(4)?,
+                token_usage_prompt: row.get(5)?,
+                token_usage_completion: row.get(6)?,
+                pinned: row.get::<_, i32>(7)? != 0,
+                status: row.get(8)?,
+                created_at: row.get(9)?,
+            })
+        })?.collect::<SqliteResult<Vec<_>>>()?;
+        Ok(entries.pop())
+    }
+
     pub fn add_entry(&self, entry: &Entry) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO entries (id, session_id, raw_input, generated_prompt, token_usage_prompt, token_usage_completion, pinned, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO entries (id, session_id, version_number, raw_input, generated_prompt, token_usage_prompt, token_usage_completion, pinned, status, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 entry.id,
                 entry.session_id,
+                entry.version_number,
                 entry.raw_input,
                 entry.generated_prompt,
                 entry.token_usage_prompt,
@@ -146,20 +191,21 @@ impl Database {
     pub fn get_session_entries(&self, session_id: &str) -> SqliteResult<Vec<Entry>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, raw_input, generated_prompt, token_usage_prompt, token_usage_completion, pinned, status, created_at
-             FROM entries WHERE session_id = ?1 ORDER BY created_at ASC"
+            "SELECT id, session_id, version_number, raw_input, generated_prompt, token_usage_prompt, token_usage_completion, pinned, status, created_at
+             FROM entries WHERE session_id = ?1 ORDER BY version_number ASC"
         )?;
         let entries = stmt.query_map(params![session_id], |row| {
             Ok(Entry {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
-                raw_input: row.get(2)?,
-                generated_prompt: row.get(3)?,
-                token_usage_prompt: row.get(4)?,
-                token_usage_completion: row.get(5)?,
-                pinned: row.get::<_, i32>(6)? != 0,
-                status: row.get(7)?,
-                created_at: row.get(8)?,
+                version_number: row.get(2)?,
+                raw_input: row.get(3)?,
+                generated_prompt: row.get(4)?,
+                token_usage_prompt: row.get(5)?,
+                token_usage_completion: row.get(6)?,
+                pinned: row.get::<_, i32>(7)? != 0,
+                status: row.get(8)?,
+                created_at: row.get(9)?,
             })
         })?.collect::<SqliteResult<Vec<_>>>()?;
         Ok(entries)
@@ -183,20 +229,21 @@ impl Database {
     pub fn get_pinned_entries(&self) -> SqliteResult<Vec<Entry>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, raw_input, generated_prompt, token_usage_prompt, token_usage_completion, pinned, status, created_at
+            "SELECT id, session_id, version_number, raw_input, generated_prompt, token_usage_prompt, token_usage_completion, pinned, status, created_at
              FROM entries WHERE pinned = 1 ORDER BY created_at DESC"
         )?;
         let entries = stmt.query_map([], |row| {
             Ok(Entry {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
-                raw_input: row.get(2)?,
-                generated_prompt: row.get(3)?,
-                token_usage_prompt: row.get(4)?,
-                token_usage_completion: row.get(5)?,
-                pinned: row.get::<_, i32>(6)? != 0,
-                status: row.get(7)?,
-                created_at: row.get(8)?,
+                version_number: row.get(2)?,
+                raw_input: row.get(3)?,
+                generated_prompt: row.get(4)?,
+                token_usage_prompt: row.get(5)?,
+                token_usage_completion: row.get(6)?,
+                pinned: row.get::<_, i32>(7)? != 0,
+                status: row.get(8)?,
+                created_at: row.get(9)?,
             })
         })?.collect::<SqliteResult<Vec<_>>>()?;
         Ok(entries)
@@ -206,20 +253,21 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let pattern = format!("%{}%", query);
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, raw_input, generated_prompt, token_usage_prompt, token_usage_completion, pinned, status, created_at
+            "SELECT id, session_id, version_number, raw_input, generated_prompt, token_usage_prompt, token_usage_completion, pinned, status, created_at
              FROM entries WHERE raw_input LIKE ?1 OR generated_prompt LIKE ?1 ORDER BY created_at DESC LIMIT 50"
         )?;
         let entries = stmt.query_map(params![pattern], |row| {
             Ok(Entry {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
-                raw_input: row.get(2)?,
-                generated_prompt: row.get(3)?,
-                token_usage_prompt: row.get(4)?,
-                token_usage_completion: row.get(5)?,
-                pinned: row.get::<_, i32>(6)? != 0,
-                status: row.get(7)?,
-                created_at: row.get(8)?,
+                version_number: row.get(2)?,
+                raw_input: row.get(3)?,
+                generated_prompt: row.get(4)?,
+                token_usage_prompt: row.get(5)?,
+                token_usage_completion: row.get(6)?,
+                pinned: row.get::<_, i32>(7)? != 0,
+                status: row.get(8)?,
+                created_at: row.get(9)?,
             })
         })?.collect::<SqliteResult<Vec<_>>>()?;
         Ok(entries)

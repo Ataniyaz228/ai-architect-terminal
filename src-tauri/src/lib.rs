@@ -65,6 +65,7 @@ pub fn run() {
             commands::toggle_pin,
             commands::get_pinned_entries,
             commands::search_entries,
+            commands::get_latest_entry,
             commands::save_entry_result,
             commands::inline_edit_request,
         ])

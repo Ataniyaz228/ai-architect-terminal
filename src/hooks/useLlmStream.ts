@@ -58,7 +58,7 @@ export function useLlmStream() {
                     s.setLatencyMs(Date.now() - s.requestStartTime);
                 }
                 s.pushVersion(event.payload.total_content);
-                s.addToHistory('user', s.rawInput);
+                s.addToHistory('user', rawInput);
                 s.addToHistory('assistant', event.payload.total_content);
 
                 if (s.currentEntryId) {
@@ -172,6 +172,17 @@ export function useLlmStream() {
                 s.addToHistory('user', refinedText);
                 s.addToHistory('assistant', event.payload.total_content);
 
+                // Save to DB (Refine now creates real entries too)
+                if (s.currentEntryId) {
+                    invoke('save_entry_result', {
+                        entryId: s.currentEntryId,
+                        prompt: event.payload.total_content,
+                        status: 'complete',
+                        tokensPrompt: event.payload.prompt_tokens,
+                        tokensCompletion: event.payload.completion_tokens,
+                    }).catch(console.error);
+                }
+
                 cleanupRef.current = null;
                 unlistenChunk();
                 unlistenDone();
@@ -194,16 +205,19 @@ export function useLlmStream() {
                 unlistenError();
             };
 
-            await invoke<string>('llm_request', {
+            const result = await invoke<string>('llm_request', {
                 payload: {
                     raw_input: refinedText,
                     mode_id: selectedMode,
                     model: selectedModel,
                     session_id: store.currentSessionId,
                     messages,
-                    skip_entry: true,
                 },
             });
+
+            const parsed = JSON.parse(result);
+            useSessionStore.getState().setCurrentSessionId(parsed.session_id);
+            useSessionStore.getState().setCurrentEntryId(parsed.entry_id);
         } catch (err: unknown) {
             const s = useSessionStore.getState();
             s.setStreamingStatus('error');

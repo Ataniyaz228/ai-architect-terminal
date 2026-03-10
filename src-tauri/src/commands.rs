@@ -102,7 +102,6 @@ pub struct LlmRequestPayload {
     pub model: Option<String>,
     pub session_id: Option<String>,
     pub messages: Option<Vec<ChatMessage>>,
-    pub skip_entry: Option<bool>,
 }
 
 #[tauri::command]
@@ -131,49 +130,41 @@ pub async fn llm_request(
         ]
     };
 
-    let should_skip = payload.skip_entry.unwrap_or(false);
-
+    // Active Session Lock: reuse existing session or create a new one
     let session_id = match payload.session_id {
         Some(sid) => sid,
         None => {
-            if should_skip {
-                "refine".to_string()
+            let sid = Uuid::new_v4().to_string();
+            let title = if payload.raw_input.chars().count() > 60 {
+                format!("{}...", payload.raw_input.chars().take(60).collect::<String>())
             } else {
-                let sid = Uuid::new_v4().to_string();
-                let title = if payload.raw_input.chars().count() > 60 {
-                    format!("{}...", payload.raw_input.chars().take(60).collect::<String>())
-                } else {
-                    payload.raw_input.clone()
-                };
-                state.db.create_session(&sid, &title, &payload.mode_id, &model)
-                    .map_err(|e| format!("DB error: {}", e))?;
-                sid
-            }
+                payload.raw_input.clone()
+            };
+            state.db.create_session(&sid, &title, &payload.mode_id, &model)
+                .map_err(|e| format!("DB error: {}", e))?;
+            sid
         }
     };
 
-    let entry_id = if should_skip {
-        "refine".to_string()
-    } else {
-        let eid = Uuid::new_v4().to_string();
-        let entry = Entry {
-            id: eid.clone(),
-            session_id: session_id.clone(),
-            raw_input: payload.raw_input.clone(),
-            generated_prompt: String::new(),
-            token_usage_prompt: 0,
-            token_usage_completion: 0,
-            pinned: false,
-            status: "generating".to_string(),
-            created_at: Utc::now().to_rfc3339(),
-        };
-        // Fix #3: DB write is short but we keep it synchronous here since it's just an INSERT.
-        // The blocking concern is primarily for search queries; short writes are fine on the
-        // tokio thread as long as they complete quickly.
-        state.db.add_entry(&entry)
-            .map_err(|e| format!("DB error: {}", e))?;
-        eid
+    // Always create a versioned entry
+    let version_number = state.db.next_version_number(&session_id)
+        .map_err(|e| format!("DB error: {}", e))?;
+    let eid = Uuid::new_v4().to_string();
+    let entry = Entry {
+        id: eid.clone(),
+        session_id: session_id.clone(),
+        version_number,
+        raw_input: payload.raw_input.clone(),
+        generated_prompt: String::new(),
+        token_usage_prompt: 0,
+        token_usage_completion: 0,
+        pinned: false,
+        status: "generating".to_string(),
+        created_at: Utc::now().to_rfc3339(),
     };
+    state.db.add_entry(&entry)
+        .map_err(|e| format!("DB error: {}", e))?;
+    let entry_id = eid;
 
     let abort_flag = state.abort_flag.clone();
     let llm_client = LlmClient::new();
@@ -288,6 +279,11 @@ pub async fn get_pinned_entries(state: State<'_, AppState>) -> Result<Vec<Entry>
 #[tauri::command]
 pub async fn search_entries(state: State<'_, AppState>, query: String) -> Result<Vec<Entry>, String> {
     state.db.search_entries(&query).map_err(|e| format!("DB error: {}", e))
+}
+
+#[tauri::command]
+pub async fn get_latest_entry(state: State<'_, AppState>, session_id: String) -> Result<Option<Entry>, String> {
+    state.db.get_latest_entry(&session_id).map_err(|e| format!("DB error: {}", e))
 }
 
 #[tauri::command]

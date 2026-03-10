@@ -14,6 +14,7 @@ export interface ModeConfig {
 export interface Entry {
     id: string;
     session_id: string;
+    version_number: number;
     raw_input: string;
     generated_prompt: string;
     token_usage_prompt: number;
@@ -114,6 +115,9 @@ interface SessionStore {
     // Error
     errorMessage: string | null;
     setErrorMessage: (msg: string | null) => void;
+
+    // New Session
+    startNewSession: () => void;
 }
 
 export const useSessionStore = create<SessionStore>((set) => ({
@@ -251,6 +255,22 @@ export const useSessionStore = create<SessionStore>((set) => ({
 
     errorMessage: null,
     setErrorMessage: (msg) => set({ errorMessage: msg }),
+
+    startNewSession: () =>
+        set({
+            currentSessionId: null,
+            currentEntryId: null,
+            rawInput: '',
+            output: '',
+            versions: [],
+            currentVersionIndex: -1,
+            conversationHistory: [],
+            streamingStatus: 'idle',
+            tokenUsage: { prompt: 0, completion: 0 },
+            errorMessage: null,
+            latencyMs: null,
+            requestStartTime: null,
+        }),
 }));
 
 // ── History Store ──
