@@ -65,6 +65,20 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_entries_session ON entries(session_id);"
         )?;
 
+        // Migration: add version_number column if it doesn't exist (for existing DBs)
+        let has_version_col: bool = {
+            let mut stmt = conn.prepare("PRAGMA table_info(entries)")?;
+            let cols: Vec<String> = stmt.query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            cols.contains(&"version_number".to_string())
+        };
+        if !has_version_col {
+            conn.execute_batch(
+                "ALTER TABLE entries ADD COLUMN version_number INTEGER NOT NULL DEFAULT 1;"
+            )?;
+        }
+
         Ok(Database {
             conn: Mutex::new(conn),
         })
